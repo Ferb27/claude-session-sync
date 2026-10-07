@@ -1,0 +1,5 @@
+# Created next to the script on every run. Contains a full copy of your Claude chats - NEVER commit.
+backup/
+logs/
+*.log
+*.undone
