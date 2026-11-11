@@ -32,15 +32,25 @@ Preview without changing anything (the app can stay open):
 powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-claude-sessions.ps1
 ```
 
-Other options (`-TargetAccount`, `-SourceAccount`, `-BackupDir`, `-BackupOnly`, `-Apply`) are described at the top of the script.
+Other options (`-TargetAccount`, `-SourceAccount`, `-DataRoot`, `-BackupDir`, `-BackupOnly`, `-Apply`) are described at the top of the script.
 
 ## How it picks the account
 
-It reads `lastKnownAccountUuid` from the app's `config.json` (just that one value, never the token caches next to it) and uses that account as the target. The Microsoft Store build redirects `%APPDATA%\Claude` into `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`, which only processes running inside the app can see through the old path, so the script looks in the package folder first.
+It reads `lastKnownAccountUuid` from the app's `config.json` (just that one value, never the token caches next to it) and uses that account as the target.
+
+The app's data folder has moved between versions, so the script looks in all known places and uses the one the app wrote to most recently (it prints it as `Claude data:`):
+
+| App version | Data folder |
+|---|---|
+| Store build 5.x | `%LOCALAPPDATA%\Claude-Data\claude_<id>` |
+| Store build 2.x | `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude` |
+| Other installs | `%APPDATA%\Claude` |
+
+If yours is somewhere else, pass it yourself: `-DataRoot "<folder that contains claude-code-sessions>"`.
 
 ## Limits (please read)
 
-- **Tested only** on Windows 10 with the Microsoft Store build of the Claude desktop app (2.26454.0.0), in Windows PowerShell 5.1 and PowerShell 7. Other Windows or app versions, and installs that are not the Store build, are untested. The step that closes and reopens the app recognises the Store build and its bundled Claude Code binary; it may not recognise other layouts, so close the app yourself first if it prints a warning.
+- **Tested only** on Windows 10 with the Microsoft Store build of the Claude desktop app (2.26454.0.0 and 5.1231.2.0), in Windows PowerShell 5.1 and PowerShell 7. An app update can move the data folder again; if the script says it cannot find it, open an issue. Other Windows or app versions, and installs that are not the Store build, are untested. The step that closes and reopens the app recognises the Store build and its bundled Claude Code binary; it may not recognise other layouts, so close the app yourself first if it prints a warning.
 - Only works for accounts used on the **same Windows user** on the same PC. It does not sync across machines.
 - A copied session reopens, but Claude shows a notice that earlier "thinking" belongs to another organization and cannot be reused. Claude then re-reads the session, so the first replies can be slower and cost more tokens. For very long sessions it can be cheaper to start a new session in the same project folder.
 - After copying, the two accounts no longer sync titles or "last activity". Run the tool again to pull in sessions created later.

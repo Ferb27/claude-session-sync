@@ -44,9 +44,13 @@
 
 .PARAMETER Force
   With -Apply: continue even if a Claude process is running (not recommended).
+
+.PARAMETER DataRoot
+  The app's data folder (the one that contains claude-code-sessions and config.json). Default: auto-detect.
 #>
 [CmdletBinding()]
 param(
+  [string]$DataRoot,
   [switch]$OneClick,
   [switch]$Undo,
   [switch]$Yes,
@@ -62,19 +66,46 @@ param(
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-# The desktop app is an MSIX (Store) package, so its "%APPDATA%\Claude" is redirected into the package folder.
-# Only processes running inside the app see that redirect; from File Explorer the real files are here:
-#   %LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude
+# Where the desktop app keeps its data has moved between versions:
+#   newer Store builds (5.x):  %LOCALAPPDATA%\Claude-Data\claude_<id>
+#   older Store builds (2.x):  %LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude
+#                              (shown to processes inside the app as %APPDATA%\Claude)
+#   non-Store installs:        %APPDATA%\Claude
+# An update can leave an old copy behind, so when several exist the one the app wrote to last wins.
 function Resolve-ClaudeDataRoot {
+  if ($DataRoot) {
+    if (Test-Path -LiteralPath (Join-Path $DataRoot 'claude-code-sessions')) { return (Resolve-Path -LiteralPath $DataRoot).Path }
+    throw "-DataRoot '$DataRoot' has no claude-code-sessions folder."
+  }
   $cands = @()
+  $cd = Join-Path $env:LOCALAPPDATA 'Claude-Data'
+  if (Test-Path -LiteralPath $cd) { $cands += @(Get-ChildItem -LiteralPath $cd -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
   $pk = Join-Path $env:LOCALAPPDATA 'Packages'
   if (Test-Path -LiteralPath $pk) {
     $cands += @(Get-ChildItem -LiteralPath $pk -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue |
       ForEach-Object { Join-Path $_.FullName 'LocalCache\Roaming\Claude' })
   }
   $cands += (Join-Path $env:APPDATA 'Claude')
-  foreach ($c in $cands) { if (Test-Path -LiteralPath (Join-Path $c 'claude-code-sessions')) { return $c } }
-  throw ('Claude data folder not found. Looked in: ' + ($cands -join '; '))
+
+  $best = $null; $bestTime = [datetime]::MinValue
+  foreach ($c in $cands) {
+    if (-not (Test-Path -LiteralPath (Join-Path $c 'claude-code-sessions'))) { continue }
+    $t = [datetime]::MinValue
+    $cfg = Join-Path $c 'config.json'
+    if (Test-Path -LiteralPath $cfg) { $t = (Get-Item -LiteralPath $cfg).LastWriteTime }
+    $f = Get-ChildItem -LiteralPath (Join-Path $c 'claude-code-sessions') -Recurse -File -Filter 'local_*.json' -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($f -and $f.LastWriteTime -gt $t) { $t = $f.LastWriteTime }
+    if (-not $best -or $t -gt $bestTime) { $best = $c; $bestTime = $t }
+  }
+  if ($best) { return $best }
+  throw ('Claude data folder not found. Looked in: ' + ($cands -join '; ') + '. Pass -DataRoot <folder> if yours is elsewhere.')
+}
+
+# the desktop app (Store build) and the Claude Code binary it manages; a CLI you installed yourself is left alone
+function Test-ClaudeAppPath([string]$path) {
+  if (-not $path) { return $false }
+  return ($path -like '*\WindowsApps\Claude_*' -or $path -like '*\Claude\claude-code\*' -or $path -like '*\Claude-Data\*\claude-code\*')
 }
 try { $dataRoot = Resolve-ClaudeDataRoot }
 catch { Write-Host ''; Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }
@@ -86,10 +117,7 @@ $logDir       = Join-Path $PSScriptRoot 'logs'
 
 # ---- helpers ----------------------------------------------------------------------------------------------
 function Get-ClaudeProcs {
-  # the desktop app (MSIX install) and the CLI binary it manages; a CLI you started yourself is left alone
-  @(Get-Process -Name 'claude' -ErrorAction SilentlyContinue | Where-Object {
-    $_.Path -like '*\WindowsApps\Claude_*' -or $_.Path -like '*\Claude\claude-code\*'
-  })
+  @(Get-Process -Name 'claude' -ErrorAction SilentlyContinue | Where-Object { Test-ClaudeAppPath $_.Path })
 }
 
 function Test-InsideClaude {
@@ -97,7 +125,7 @@ function Test-InsideClaude {
   for ($i = 0; $i -lt 25 -and $id; $i++) {
     $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
     if (-not $p) { return $false }
-    if ($p.ExecutablePath -like '*\WindowsApps\Claude_*' -or $p.ExecutablePath -like '*\Claude\claude-code\*') { return $true }
+    if (Test-ClaudeAppPath $p.ExecutablePath) { return $true }
     $id = $p.ParentProcessId
   }
   return $false
@@ -202,6 +230,7 @@ function Invoke-Main {
   })
   $accountDirs = @(Get-ChildItem -LiteralPath $sessionsRoot -Directory)
 
+  Write-Host ('Claude data: ' + $dataRoot)
   Write-Host 'Accounts found:'
   foreach ($a in $accountDirs) {
     $mine = @($sessions | Where-Object { $_.Account -eq $a.Name })
